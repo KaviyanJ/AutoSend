@@ -27,7 +27,6 @@ pip install -r requirements.txt
 
 ```bash
 FLASK_SECRET_KEY=your_random_secret
-SERPAPI_API_KEY=your_serpapi_key
 GMAIL_USER=your_gmail_address@gmail.com
 GMAIL_APP_PASSWORD=your_gmail_app_password
 RESUME_PATH=Resume - Jeyakumar Kaviyan.pdf

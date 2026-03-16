@@ -4,7 +4,6 @@ import datetime
 import re
 import smtplib
 import random
-import json
 from email.message import EmailMessage
 from typing import List, Dict, Any
 
@@ -21,109 +20,11 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key-change-me")
 
 # Config / environment
-SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY", "")
 GMAIL_USER = os.environ.get("GMAIL_USER", "kaviyan.n.jeyakumar@gmail.com")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 RESUME_PATH = os.environ.get("RESUME_PATH", "Resume - Jeyakumar Kaviyan.pdf")
 DAILY_LIMIT = int(os.environ.get("DAILY_EMAIL_LIMIT", "100"))
 LOG_PATH = os.environ.get("EMAIL_LOG_PATH", "email_log.csv")
-
-# Hard-coded focus and search phrases based on your preferences
-FOCUS_QUERIES = [
-    # Hardware / PCB
-    "electrical engineering internship hardware design pcb startup small team",
-    # Power / renewables
-    "electrical engineering intern power systems renewable energy startup",
-    # Robotics / controls
-    "robotics controls electrical engineering internship startup early-stage",
-    # Semiconductor / VLSI
-    "semiconductor vlsi electrical engineering internship startup",
-]
-
-LOCATIONS = [
-    "Waterloo, Ontario, Canada",
-    "Toronto, Ontario, Canada",
-    "San Francisco, California, USA",
-]
-
-EXCLUDED_TERMS = ["oil and gas", "oil & gas", "petroleum"]
-
-
-def is_company_like_result(title: str, link: str) -> bool:
-    """
-    Heuristic filter to skip obvious personal portfolios/blogs
-    and keep likely company or organization sites.
-    """
-    title_l = (title or "").lower()
-    if any(word in title_l for word in ["portfolio", "resume", "personal website"]):
-        return False
-
-    try:
-        domain = urlparse(link).netloc.lower()
-    except Exception:
-        return False
-
-    # Very small blacklist of clearly personal/landing-page hosts
-    blacklist_domains = (
-        "github.io",
-        "about.me",
-        "linktr.ee",
-    )
-    if any(domain.endswith(b) for b in blacklist_domains):
-        return False
-
-    return True
-
-
-def serpapi_search() -> List[Dict[str, Any]]:
-    """
-    Use SerpAPI to search for potential internship employers.
-    Returns a list of search result dicts with 'title' and 'link'.
-    """
-    if not SERPAPI_API_KEY:
-        raise RuntimeError(
-            "SERPAPI_API_KEY is not set. Please set it in your .env file."
-        )
-
-    results: List[Dict[str, Any]] = []
-    # Ask SerpAPI for more results per query so we have enough
-    # candidates to hit your requested draft count after filtering.
-    max_results_per_query = 30
-    for loc in LOCATIONS:
-        for q in FOCUS_QUERIES:
-            params = {
-                "engine": "google",
-                "q": f"{q} {loc} internship",
-                "api_key": SERPAPI_API_KEY,
-                "num": max_results_per_query,
-            }
-            try:
-                resp = requests.get("https://serpapi.com/search", params=params, timeout=30)
-                resp.raise_for_status()
-                data = resp.json()
-            except Exception as e:
-                # Log to console; UI will just see fewer results
-                print(f"SerpAPI error for query '{q}' in '{loc}': {e}")
-                continue
-
-            organic_results = data.get("organic_results", []) or []
-            for item in organic_results:
-                link = item.get("link")
-                title = item.get("title")
-                if not link or not title:
-                    continue
-                # Apply only very light filtering; keep most results
-                if not is_company_like_result(title, link):
-                    continue
-                results.append(
-                    {
-                        "title": title,
-                        "link": link,
-                        "location": loc,
-                        "query": q,
-                    }
-                )
-    return results
 
 
 def parse_manual_company_lines(lines: str) -> List[Dict[str, Any]]:
@@ -268,13 +169,46 @@ def extract_emails_with_contact_variants(url: str) -> List[str]:
     except Exception:
         base = ""
 
-    # Main page
+    # 1) Main page
     _add_from(url)
 
-    # Try a few common subpaths for company contact/careers
+    # 2) A few common subpaths for company contact/careers
     if base:
-        for path in ["/contact", "/contact-us", "/careers", "/jobs", "/about"]:
+        for path in ["/contact", "/contact-us", "/careers", "/jobs", "/about", "/team"]:
             _add_from(base + path)
+
+        # 3) Heuristically follow a handful of internal links that look like contact/careers pages.
+        try:
+            resp = requests.get(url, timeout=15)
+            if resp.status_code < 400:
+                from bs4 import BeautifulSoup
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+                keyword_paths = []
+                for a in soup.find_all("a", href=True):
+                    href = a["href"]
+                    text = (a.get_text(strip=True) or "").lower()
+
+                    # Normalize to absolute URLs on the same host
+                    full = urlparse(href)
+                    if not full.netloc:
+                        full_url = base.rstrip("/") + "/" + href.lstrip("/")
+                    elif full.netloc == parsed.netloc:
+                        full_url = href
+                    else:
+                        continue
+
+                    if any(
+                        kw in (href.lower() + " " + text)
+                        for kw in ["contact", "career", "jobs", "team", "people", "about"]
+                    ):
+                        keyword_paths.append(full_url)
+
+                # Limit to a few to avoid crawling the whole site
+                for link in keyword_paths[:5]:
+                    _add_from(link)
+        except Exception:
+            pass
 
     return emails
 
@@ -532,17 +466,11 @@ def run_search():
         max_drafts = 100
     session["max_drafts"] = max_drafts
 
-    # Parse user-supplied company lines, then (optionally) augment with SerpAPI.
+    # Parse user-supplied company lines.
     lines_raw = request.form.get("company_lines", "")
     search_results: List[Dict[str, Any]] = []
     if lines_raw.strip():
         search_results = parse_manual_company_lines(lines_raw)
-
-    # If the user gives fewer companies than requested drafts and SerpAPI is available,
-    # we can still top up with automated search results.
-    if len(search_results) < max_drafts and SERPAPI_API_KEY:
-        extra = serpapi_search()
-        search_results.extend(extra)
     already_contacted = read_already_contacted()
     drafts: List[Dict[str, Any]] = []
     processed_companies: set[str] = set()
