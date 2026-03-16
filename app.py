@@ -3,6 +3,8 @@ import csv
 import datetime
 import re
 import smtplib
+import random
+import json
 from email.message import EmailMessage
 from typing import List, Dict, Any
 
@@ -23,7 +25,7 @@ SERPAPI_API_KEY = os.environ.get("SERPAPI_API_KEY", "")
 GMAIL_USER = os.environ.get("GMAIL_USER", "kaviyan.n.jeyakumar@gmail.com")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 RESUME_PATH = os.environ.get("RESUME_PATH", "Resume - Jeyakumar Kaviyan.pdf")
-DAILY_LIMIT = int(os.environ.get("DAILY_EMAIL_LIMIT", "20"))
+DAILY_LIMIT = int(os.environ.get("DAILY_EMAIL_LIMIT", "100"))
 LOG_PATH = os.environ.get("EMAIL_LOG_PATH", "email_log.csv")
 
 # Hard-coded focus and search phrases based on your preferences
@@ -47,6 +49,32 @@ LOCATIONS = [
 EXCLUDED_TERMS = ["oil and gas", "oil & gas", "petroleum"]
 
 
+def is_company_like_result(title: str, link: str) -> bool:
+    """
+    Heuristic filter to skip obvious personal portfolios/blogs
+    and keep likely company or organization sites.
+    """
+    title_l = (title or "").lower()
+    if any(word in title_l for word in ["portfolio", "resume", "personal website"]):
+        return False
+
+    try:
+        domain = urlparse(link).netloc.lower()
+    except Exception:
+        return False
+
+    # Very small blacklist of clearly personal/landing-page hosts
+    blacklist_domains = (
+        "github.io",
+        "about.me",
+        "linktr.ee",
+    )
+    if any(domain.endswith(b) for b in blacklist_domains):
+        return False
+
+    return True
+
+
 def serpapi_search() -> List[Dict[str, Any]]:
     """
     Use SerpAPI to search for potential internship employers.
@@ -58,29 +86,34 @@ def serpapi_search() -> List[Dict[str, Any]]:
         )
 
     results: List[Dict[str, Any]] = []
-    # Optional cap on number of raw search results we keep before
-    # filtering down to the user-chosen draft limit.
-    max_results_per_query = 15
+    # Ask SerpAPI for more results per query so we have enough
+    # candidates to hit your requested draft count after filtering.
+    max_results_per_query = 30
     for loc in LOCATIONS:
         for q in FOCUS_QUERIES:
             params = {
                 "engine": "google",
-                "q": f"{q} {loc} -\"oil & gas\" -\"oil and gas\" -\"recruiting agency\"",
+                "q": f"{q} {loc} internship",
                 "api_key": SERPAPI_API_KEY,
                 "num": max_results_per_query,
             }
-            resp = requests.get("https://serpapi.com/search", params=params, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
-            organic_results = data.get("organic_results", [])
+            try:
+                resp = requests.get("https://serpapi.com/search", params=params, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception as e:
+                # Log to console; UI will just see fewer results
+                print(f"SerpAPI error for query '{q}' in '{loc}': {e}")
+                continue
+
+            organic_results = data.get("organic_results", []) or []
             for item in organic_results:
                 link = item.get("link")
                 title = item.get("title")
                 if not link or not title:
                     continue
-                # Basic exclusion filter
-                lowered = (title or "").lower()
-                if any(term in lowered for term in EXCLUDED_TERMS):
+                # Apply only very light filtering; keep most results
+                if not is_company_like_result(title, link):
                     continue
                 results.append(
                     {
@@ -90,6 +123,38 @@ def serpapi_search() -> List[Dict[str, Any]]:
                         "query": q,
                     }
                 )
+    return results
+
+
+def parse_manual_company_lines(lines: str) -> List[Dict[str, Any]]:
+    """
+    Parse user-supplied lines in the format:
+    Company Name | https://company-website-url.com | City, Region
+    into a list of {title, link, location, query} dicts.
+    """
+    results: List[Dict[str, Any]] = []
+    for raw in lines.splitlines():
+        line = raw.strip()
+        if not line or "|" not in line:
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 2:
+            continue
+        name = parts[0]
+        url = parts[1]
+        loc = parts[2] if len(parts) > 2 else ""
+        if not name or not url:
+            continue
+        if not url.startswith("http://") and not url.startswith("https://"):
+            url = "https://" + url
+        results.append(
+            {
+                "title": name,
+                "link": url,
+                "location": loc,
+                "query": "manual_company_list",
+            }
+        )
     return results
 
 
@@ -108,19 +173,110 @@ def extract_emails_from_url(url: str) -> List[str]:
         return []
 
     soup = BeautifulSoup(resp.text, "html.parser")
+
+    # 1) Emails in visible text
     text = soup.get_text(" ", strip=True)
     candidates = set(re.findall(EMAIL_REGEX, text))
 
+    # 2) Emails in mailto: links
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if href.startswith("mailto:"):
+            addr = href.split("mailto:", 1)[1].split("?", 1)[0]
+            if EMAIL_REGEX.fullmatch(addr):
+                candidates.add(addr)
+
     filtered = []
+    filtered_primary: List[str] = []
+    filtered_fallback: List[str] = []
+
+    banned_locals = [
+        "noreply",
+        "no-reply",
+        "donotreply",
+        "do-not-reply",
+        "sales",
+        "bizdev",
+        "business",
+        "media",
+        "press",
+        "investor",
+        "ir@",
+        "support",
+        "help",
+        "billing",
+        "accounting",
+        "marketing",
+        "newsletter",
+        "advertising",
+    ]
+    preferred_locals = [
+        "careers",
+        "career",
+        "jobs",
+        "job",
+        "hr",
+        "recruit",
+        "talent",
+        "intern",
+        "internship",
+        "students",
+        "university",
+        "campus",
+        "info",
+        "contact",
+        "engineering",
+    ]
+
     for email in candidates:
-        # Ignore obvious non-contact emails
-        if any(
-            s in email.lower()
-            for s in ["noreply@", "no-reply@", "donotreply@", "do-not-reply@"]
-        ):
+        local_part = email.split("@", 1)[0].lower()
+        # Ignore obvious non-contact emails entirely
+        if any(b in local_part for b in banned_locals):
             continue
-        filtered.append(email)
-    return filtered
+        # Strongly prefer "good" inboxes (careers/info/etc.)
+        if any(p in local_part for p in preferred_locals):
+            filtered_primary.append(email)
+        else:
+            filtered_fallback.append(email)
+
+    # If we found any clearly relevant inboxes, use only those.
+    if filtered_primary:
+        return filtered_primary
+    # Otherwise fall back to any non-banned emails we saw.
+    return filtered_fallback
+
+
+def extract_emails_with_contact_variants(url: str) -> List[str]:
+    """
+    Try the main URL first, then common 'contact'/'careers' style URLs
+    for the same host to improve chances of finding an email.
+    """
+    seen: set[str] = set()
+    emails: List[str] = []
+
+    def _add_from(u: str):
+        nonlocal emails
+        found = extract_emails_from_url(u)
+        for e in found:
+            if e.lower() not in seen:
+                seen.add(e.lower())
+                emails.append(e)
+
+    try:
+        parsed = urlparse(url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+    except Exception:
+        base = ""
+
+    # Main page
+    _add_from(url)
+
+    # Try a few common subpaths for company contact/careers
+    if base:
+        for path in ["/contact", "/contact-us", "/careers", "/jobs", "/about"]:
+            _add_from(base + path)
+
+    return emails
 
 
 def read_today_sent_count() -> int:
@@ -136,7 +292,9 @@ def read_today_sent_count() -> int:
         for row in reader:
             if row.get("date") == today and row.get("status") == "SENT":
                 count += 1
-    return count
+    # Clamp to DAILY_LIMIT so remaining never goes negative if the log
+    # somehow contains more than the configured daily limit for today.
+    return min(count, DAILY_LIMIT)
 
 
 def append_log(rows: List[Dict[str, Any]]):
@@ -165,12 +323,52 @@ def read_already_contacted() -> set[tuple[str, str]]:
     with open(LOG_PATH, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            if row.get("status") == "SENT":
+            status = (row.get("status") or "").upper()
+            if status in ("SENT", "REJECTED"):
                 company = (row.get("company") or "").strip()
                 email = (row.get("email") or "").strip().lower()
                 if company and email:
                     contacted.add((company, email))
     return contacted
+
+
+def choose_preferred_email(emails: List[str]) -> str | None:
+    """
+    From a list of candidate emails, pick a single 'best' one, preferring
+    careers/info/hr-style inboxes over everything else.
+    """
+    if not emails:
+        return None
+
+    priority_order = [
+        "careers",
+        "career",
+        "jobs",
+        "job",
+        "intern",
+        "internship",
+        "hr",
+        "recruit",
+        "talent",
+        "students",
+        "university",
+        "campus",
+        "engineering",
+        "info",
+        "contact",
+    ]
+
+    def score(email: str) -> int:
+        local = email.split("@", 1)[0].lower()
+        for idx, token in enumerate(priority_order):
+            if token in local:
+                # Higher priority → larger score
+                return len(priority_order) - idx
+        return 0
+
+    # Sort descending by score, then by email to be deterministic
+    best = sorted(emails, key=lambda e: (score(e), e.lower()), reverse=True)[0]
+    return best
 
 
 def send_email_via_gmail(to_email: str, subject: str, body: str) -> bool:
@@ -231,7 +429,7 @@ If there are any upcoming or potential Summer 2026 internships that fits me well
 
 Thank you for humoring my cold email.
 
-Sincerely,
+Sincerely,      
 Kaviyan Jeyakumar
 Waterloo, Ontario
 Portfolio: https://kaviyanj.github.io/KaviyanJeyakumarPortfolio.github.io/
@@ -256,7 +454,7 @@ def index():
     today_sent = read_today_sent_count()
     remaining = max(0, DAILY_LIMIT - today_sent)
     drafts = session.get("drafts", [])
-    default_max_drafts = session.get("max_drafts", 20)
+    default_max_drafts = session.get("max_drafts", 100)
     return render_template_string(
         """
         <!doctype html>
@@ -286,13 +484,18 @@ def index():
                 {% endif %}
             {% endwith %}
             <form method="post" action="{{ url_for('run_search') }}">
-                <p>This will use SerpAPI to search for EE-focused startup companies (small teams) near Waterloo, Toronto, and San Francisco, then try to discover contact emails.</p>
+                <p>Paste company lines in the format: <code>Company Name | https://company-website-url.com | City, Region</code>. The app will find emails, avoid duplicates, and build editable drafts.</p>
                 <label>
-                    <strong>Max drafts to create this run</strong>
-                    <input type="number" name="max_drafts" min="1" max="200" value="{{ default_max_drafts }}">
+                    <strong>Max drafts to create this run (1–100)</strong>
+                    <input type="number" name="max_drafts" min="1" max="100" value="{{ default_max_drafts }}">
                 </label>
                 <br><br>
-                <button class="btn" type="submit">Run search &amp; build drafts</button>
+                <label>
+                    <strong>Company list (one per line)</strong><br>
+                    <textarea name="company_lines" rows="8" style="width:100%;" placeholder="Example Power Systems | https://example.com | Waterloo, ON"></textarea>
+                </label>
+                <br><br>
+                <button class="btn" type="submit">Build drafts from list</button>
             </form>
             {% if drafts %}
                 <hr>
@@ -322,53 +525,86 @@ def run_search():
     try:
         max_drafts = int(max_drafts_raw)
     except ValueError:
-        max_drafts = 20
+        max_drafts = 10
     if max_drafts < 1:
         max_drafts = 1
-    if max_drafts > 200:
-        max_drafts = 200
+    if max_drafts > 100:
+        max_drafts = 100
     session["max_drafts"] = max_drafts
 
-    search_results = serpapi_search()
+    # Parse user-supplied company lines, then (optionally) augment with SerpAPI.
+    lines_raw = request.form.get("company_lines", "")
+    search_results: List[Dict[str, Any]] = []
+    if lines_raw.strip():
+        search_results = parse_manual_company_lines(lines_raw)
+
+    # If the user gives fewer companies than requested drafts and SerpAPI is available,
+    # we can still top up with automated search results.
+    if len(search_results) < max_drafts and SERPAPI_API_KEY:
+        extra = serpapi_search()
+        search_results.extend(extra)
     already_contacted = read_already_contacted()
     drafts: List[Dict[str, Any]] = []
+    processed_companies: set[str] = set()
+    total_results = len(search_results)
+    total_with_emails = 0
 
     for item in search_results:
         url = item["link"]
         title = item["title"]
-        emails = extract_emails_from_url(url)
-        if not emails:
+        company_name = title.split(" - ")[0][:80]
+
+        # Avoid processing the same company multiple times (across duplicate URLs)
+        company_key = company_name.strip().lower()
+        if company_key in processed_companies:
             continue
 
-        company_name = title.split(" - ")[0][:80]
+        emails = extract_emails_with_contact_variants(url)
+        if not emails:
+            continue
+        total_with_emails += 1
+
         role_hint = infer_role_hint(item["query"])
         subject = f"Summer 2026 Electrical Engineering Internship – {company_name}"
         body = make_personalized_body(company_name, role_hint, url)
 
-        for email in emails:
-            key = (company_name.strip(), email.strip().lower())
-            if key in already_contacted:
-                # Skip duplicates so we don't email the same company + email twice
-                continue
-            drafts.append(
-                {
-                    "company": company_name,
-                    "email": email,
-                    "subject": subject,
-                    "body": body,
-                    "url": url,
-                }
-            )
+        # Choose a single preferred email per company so we don't spam multiple inboxes.
+        preferred = choose_preferred_email(emails)
+        if not preferred:
+            continue
+        key = (company_name.strip(), preferred.strip().lower())
+        if key in already_contacted:
+            # Skip duplicates so we don't email the same company + email twice
+            continue
 
-            # Stop once we have reached the requested number of drafts
-            if len(drafts) >= max_drafts:
-                break
-        if len(drafts) >= max_drafts:
-            break
+        drafts.append(
+            {
+                "company": company_name,
+                "email": preferred,
+                "subject": subject,
+                "body": body,
+                "url": url,
+            }
+        )
+        processed_companies.add(company_key)
+
+    # Shuffle to mix Waterloo, Toronto, and SF results before truncating
+    random.shuffle(drafts)
+    if len(drafts) > max_drafts:
+        drafts = drafts[:max_drafts]
 
     # Store drafts in session (semi-automatic, same browser)
     session["drafts"] = drafts
-    flash(f"Built {len(drafts)} email drafts. Review them before sending.")
+    if not drafts:
+        flash(
+            f"Found {total_results} company results but no usable email addresses "
+            f"(after skipping sent/rejected). Try again later or adjust filters."
+        )
+    else:
+        flash(
+            f"Found {total_results} company results, {total_with_emails} with emails. "
+            f"Built {len(drafts)} unique drafts. Review them before sending."
+        )
     return redirect(url_for("preview"))
 
 
@@ -397,14 +633,30 @@ def preview():
         selected_indices_int = [int(i) for i in selected_indices]
 
         if action == "delete":
-            # Remove selected drafts from the list (no emails sent)
+            # Mark selected drafts as REJECTED in the log and remove them from the list
+            rejected_logs = []
+            keep_indices = set(range(len(drafts))) - set(selected_indices_int)
             remaining_drafts: List[Dict[str, Any]] = []
             for idx, d in enumerate(drafts):
                 if idx in selected_indices_int:
-                    continue
-                remaining_drafts.append(d)
+                    rejected_logs.append(
+                        {
+                            "date": datetime.date.today().isoformat(),
+                            "company": d["company"],
+                            "email": d["email"],
+                            "subject": d["subject"],
+                            "status": "REJECTED",
+                            "source_url": d["url"],
+                        }
+                    )
+                else:
+                    remaining_drafts.append(d)
+
+            if rejected_logs:
+                append_log(rejected_logs)
+
             session["drafts"] = remaining_drafts
-            flash(f"Deleted {len(drafts) - len(remaining_drafts)} draft(s).")
+            flash(f"Rejected and removed {len(rejected_logs)} draft(s). They will not reappear in future runs.")
             return redirect(url_for("preview"))
 
         # Default action: send selected
@@ -462,6 +714,12 @@ def preview():
                 .btn { padding: 0.5rem 1rem; background:#16a34a; color:white;
                        border:none; border-radius:4px; cursor:pointer; margin-top:1rem; }
             </style>
+            <script>
+                function toggleSelectAll(source) {
+                    const checkboxes = document.querySelectorAll('input[name="selected"]');
+                    checkboxes.forEach(cb => { cb.checked = source.checked; });
+                }
+            </script>
         </head>
         <body>
             <h2>Preview &amp; Select Draft Emails</h2>
@@ -483,7 +741,10 @@ def preview():
                 <table>
                     <thead>
                         <tr>
-                            <th>Select</th>
+                            <th>
+                                <input type="checkbox" onclick="toggleSelectAll(this)">
+                                Select
+                            </th>
                             <th>Company</th>
                             <th>Email</th>
                             <th>Subject (editable)</th>
