@@ -1,0 +1,15 @@
+/.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Local config and secrets
+.env
+credentials.json
+token.json
+
+# Logs and data
+email_log.csv
+
+# Personal documents
+*.pdf
