@@ -1,44 +1,91 @@
-## AutoSend
+# AutoSend
 
-AutoSend is a small local Python/Flask web app that helps you semi‑automate outreach for electrical engineering internships.
+A local Flask app for semi-automating electrical engineering co-op outreach.
 
-You provide a list of target companies (with a focus on hardware/PCB, power/renewables, robotics/controls, and semiconductor/VLSI roles in Waterloo, Toronto, and San Francisco), the app scrapes their sites for contact emails, and then lets you:
+You supply a list of target companies, AutoSend scrapes each site for a usable
+contact address, drafts a personalised email, and lets you review and edit every
+draft before anything is sent. Nothing goes out without you selecting it.
 
-- Paste companies in the format `Company Name | https://company-website-url.com | City, Region`.
-- Automatically discover likely **careers/info/engineering** inboxes while skipping sales/investor/media/support addresses.
-- Ensure **only one email per company** and skip any company+email that has already been sent to or explicitly rejected.
-- Review and **edit** each email (subject + body) in the browser.
-- **Select all** or individually choose which drafts to send or delete.
-- Enforce a daily sending cap (configurable via `DAILY_EMAIL_LIMIT`).
-- Send via Gmail (SMTP with an app password) with your resume attached.
-- Log all sent attempts to a CSV file so duplicates to the same company/email are avoided on future runs.
+## Files
 
-### Setup
+```
+app.py                  Flask routes and page rendering
+core.py                 config, log, blocklist, scraping, SMTP, email template
+static/style.css        stylesheet (was inlined in app.py)
+static/map.js           map page script (was inlined in app.py)
+autosend_config.json    term, name, location, portfolio, daily limit
+email_log.csv           every send / rejection, appended forever
+.autosend_data/         blocklist, scrape cache, saved lists, draft store
+```
 
-1. Create and activate a virtual environment, then install dependencies:
+`.autosend_data/` is created on first run. It is gitignored.
+
+## Setup
 
 ```bash
 python -m venv .venv
-.\.venv\bin\Activate.ps1   # PowerShell
+.\.venv\Scripts\Activate.ps1      # PowerShell
 pip install -r requirements.txt
 ```
 
-2. Create a `.env` file alongside `app.py`:
-
-```bash
-FLASK_SECRET_KEY=your_random_secret
-GMAIL_USER=your_gmail_address@gmail.com
-GMAIL_APP_PASSWORD=your_gmail_app_password
-RESUME_PATH=Resume - Jeyakumar Kaviyan.pdf
-DAILY_EMAIL_LIMIT=20
-EMAIL_LOG_PATH=email_log.csv
-```
-
-3. Run the app:
+Create `.env` next to `app.py` — see `.env.example`. The Gmail app password is a
+16-character password generated at myaccount.google.com/apppasswords, not your
+normal account password.
 
 ```bash
 python app.py
 ```
 
-Then open `http://127.0.0.1:5000` in your browser. From the dashboard you can set the **max drafts per run**, paste your company list, build drafts, and then review/edit/send them from the preview page.
+Then open http://127.0.0.1:5000.
 
+## Pages
+
+**Campaign** — paste or upload your company list, then build drafts.
+
+```
+Company Name | https://url.com | City, Region | focus
+```
+
+Location and focus are optional. `focus` sets the opening line of the email and
+accepts `power`, `pcb`, `hardware`, `robotics`, `control`, `semiconductor`,
+`vlsi`, `embedded`, or `test`. Anything unrecognised falls back to the default
+focus in Settings.
+
+**Preview** — edit any subject or body, then send, reject, or reject-and-block.
+Sending goes over a single SMTP connection for the whole batch.
+
+**Blocklist** — domains that are never contacted, in any term. Matching covers
+subdomains, so `gridgear.ca` also blocks `careers.gridgear.ca` and
+`hr@mail.gridgear.ca`. Blocked companies are dropped before any scraping runs.
+Seeded with `gridgear.ca`; add Electrans' domain yourself.
+
+**History** — the full log, filterable, exportable.
+
+**Settings** — term, name, location, portfolio, default focus, daily cap, and a
+button to clear the scrape cache.
+
+**Map Search** — OpenStreetMap-based company discovery. Coverage is thin; the
+paste list is the main path.
+
+## Behaviour worth knowing
+
+- **Term gating.** Companies contacted in a previous term become eligible again
+  when you change the term. The blocklist ignores terms entirely.
+- **One email per domain per term.** Deduplication is by email domain, not by
+  company name, so the same inbox can't be hit twice because a company appears
+  under two names.
+- **Scrape cache.** Discovered addresses are cached per domain for 30 days.
+  Clear it from Settings if a company changes its contact page.
+- **Daily cap.** Enforced at send time and shown in the header. It lives in
+  `autosend_config.json`; `DAILY_EMAIL_LIMIT` in `.env` is only a fallback for
+  the first run.
+- **Log migration.** On startup, a log missing the `term` or `domain` columns is
+  rewritten in place with a dated `.bak-` backup alongside it.
+
+## Address filtering
+
+Scraped addresses are scored, not just filtered. Same-domain addresses are
+strongly preferred, `careers@`/`jobs@`/`intern@`/`hr@` rank above `info@` and
+`contact@`, and `sales@`, `investor@`, `legal@`, `press@`, `support@`, and
+placeholder domains like `example.com` are rejected outright. If nothing scores
+above zero the company is skipped rather than emailed at a bad address.
