@@ -633,7 +633,7 @@ def make_body(company: str, hook: str, cfg: dict) -> str:
     lines = [
         "Hi there,",
         "",
-        f"I'm {first}, an Electrical Engineering student at the University of Waterloo, "
+        f"My name is {first}, an Electrical Engineering student at the University of Waterloo, "
         f"and I'm looking for a paid {term} co-op in {hook}. I'm writing to ask whether "
         f"{company} takes on co-op students for that term.",
         "",
@@ -642,8 +642,8 @@ def make_body(company: str, hook: str, cfg: dict) -> str:
         "- At GridGear Solutions I built a Raspberry Pi calibration station "
         "(Python/Tkinter over serial) for production electricity meters, cutting board "
         "load time from 60s to under 10s. I also root-caused a surge test failure under "
-        "ANSI/UL 61010-2-030 by tracing a 2.32 kV transient at the SMPS input — 132% over "
-        "the part's rating — and scoped the MOV/TVS redesign path.",
+        "ANSI/UL 61010-2-030 by tracing a 2.32 kV transient at the SMPS input, 132% over "
+        "the part's rating, and scoped the MOV/TVS redesign path.",
         "",
         "- At Electrans Technology I replaced LDOs with LTC3115-1 buck-boost converters on "
         "a telematics unit, dropping heat dissipation from 4.8 W to 0.47 W and clearing the "
@@ -657,7 +657,7 @@ def make_body(company: str, hook: str, cfg: dict) -> str:
         f"My resume and portfolio is attached below. If there's a {short} opening, or one you expect to post, "
         "I'd appreciate a pointer to the right person.",
         "",
-        "Thanks for your time,",
+        "Thanks for humoring my cold email,",
         name,
     ]
     if portfolio:
