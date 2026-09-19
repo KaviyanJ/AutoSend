@@ -595,6 +595,10 @@ _FOCUS_HOOKS = {
     "vlsi":          "semiconductor and mixed-signal hardware",
     "embedded":      "embedded systems and firmware",
     "test":          "hardware test, validation, and instrumentation",
+    "fpga":          "FPGA and digital logic design",
+    "rtl":           "FPGA and digital logic design",
+    "verilog":       "FPGA and digital logic design",
+    "vhdl":          "FPGA and digital logic design",
 }
 
 
