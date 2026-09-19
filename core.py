@@ -625,8 +625,7 @@ def make_subject(company: str, cfg: dict) -> str:
 def make_body(company: str, hook: str, cfg: dict) -> str:
     name      = cfg.get("your_name", "Kaviyan Jeyakumar")
     term      = cfg.get("internship_term", "")
-    portfolio = cfg.get("portfolio_url", "")
-    location  = cfg.get("location", "Waterloo, Ontario")
+    portfolio = cfg.get("portfolio_url", "https://kaviyanj.github.io/KaviyanJeyakumarPortfolio.github.io/")
     first     = name.split()[0] if name else "Kaviyan"
     short     = _TERM_RE.search(term)
     short     = short.group(0) if short else term
@@ -655,12 +654,11 @@ def make_body(company: str, hook: str, cfg: dict) -> str:
         "- On Waterloo's Orbital team I built an LTSpice digital twin of a buck converter "
         "that hit 84.8% conversion efficiency at 1.5 A with 33 mV of undershoot on a load step.",
         "",
-        f"My resume is attached. If there's a {short} opening — or one you expect to post — "
+        f"My resume and portfolio is attached below. If there's a {short} opening, or one you expect to post, "
         "I'd appreciate a pointer to the right person.",
         "",
         "Thanks for your time,",
         name,
-        location,
     ]
     if portfolio:
         lines.append(f"Portfolio: {portfolio}")
