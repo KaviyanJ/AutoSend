@@ -41,7 +41,7 @@ GMAIL_USER  = os.environ.get("GMAIL_USER", "")
 GMAIL_PASS  = os.environ.get("GMAIL_APP_PASSWORD", "")
 RESUME_PATH = os.environ.get("RESUME_PATH", "Resume - Jeyakumar Kaviyan.pdf")
 LOG_PATH    = os.environ.get("EMAIL_LOG_PATH", "email_log.csv")
-_ENV_LIMIT  = int(os.environ.get("DAILY_EMAIL_LIMIT", "20"))
+_ENV_LIMIT  = int(os.environ.get("DAILY_EMAIL_LIMIT", "100"))
 
 # ── Tunables ───────────────────────────────────────────────────────────────────
 HTTP_TIMEOUT      = 6          # was 15 — most dead sites hang the full timeout

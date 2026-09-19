@@ -9,10 +9,8 @@ draft before anything is sent. Nothing goes out without you selecting it.
 ## Files
 
 ```
-app.py                  Flask routes and page rendering
+app.py                  Flask routes, page rendering, CSS and map script
 core.py                 config, log, blocklist, scraping, SMTP, email template
-static/style.css        stylesheet (was inlined in app.py)
-static/map.js           map page script (was inlined in app.py)
 autosend_config.json    term, name, location, portfolio, daily limit
 email_log.csv           every send / rejection, appended forever
 .autosend_data/         blocklist, scrape cache, saved lists, draft store
